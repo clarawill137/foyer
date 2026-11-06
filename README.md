@@ -14,10 +14,16 @@
 ## Установка
 
 ```
-docker exec sillytavern sh -c 'cd /home/node/app/data/default-user/extensions && git clone -b foyer --single-branch https://github.com/clarawill137/LIFE foyer'
+docker exec sillytavern sh -c 'cd /home/node/app/data/default-user/extensions && git clone https://github.com/clarawill137/foyer foyer'
 ```
 
 Потом обновить страницу.
+
+Если Фойе раньше стояло из ветки `foyer` репы LIFE — переставить отсюда (настройки и снимки живут в settings.json, не в папке, — не пропадут):
+
+```
+docker exec sillytavern sh -c 'cd /home/node/app/data/default-user/extensions && rm -rf foyer && git clone https://github.com/clarawill137/foyer foyer'
+```
 
 ## Обновление
 
