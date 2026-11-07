@@ -7,7 +7,7 @@
 // из шапки GC / Horae и концовку последнего поста, чтобы на главной было по-человечески.
 
 const MOD = 'foyer';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const ctx = () => SillyTavern.getContext();
 
 const DEF = {
@@ -249,6 +249,9 @@ function tapFetch() {
 // ───────────── данные для экрана ─────────────
 
 const isImg = (u) => typeof u === 'string' && u.length > 4 && u !== 'undefined' && u !== 'null';
+// своя картинка группы — как у ST (isValidImageUrl): загруженная (user/…) или data:; заглушку img/ai4.png ST подменяет
+// коллажем участников — и Фойе тоже
+const groupPic = (g) => { const u = g?.avatar_url; return isImg(u) && /^(data:|\/?user\/|https?:)/i.test(u) ? u : ''; };
 const thumb = (avatar) => { try { return ctx().getThumbnailUrl('avatar', avatar); } catch { return `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`; } };
 const full = (avatar) => `/characters/${encodeURIComponent(avatar)}`;
 const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || '';
@@ -346,7 +349,7 @@ function enrich(it) {
 
 function avaThumbHtml(it) {
     if (it.group) {
-        if (isImg(it.g?.avatar_url)) return `<span class="fy-ava"><img src="${esc(it.g.avatar_url)}" alt="" loading="lazy" onerror="this.remove()"></span>`;
+        if (groupPic(it.g)) return `<span class="fy-ava"><img src="${esc(groupPic(it.g))}" alt="" loading="lazy" onerror="this.remove()"></span>`;
         const ms = it.members.slice(0, 4);
         if (!ms.length) return `<span class="fy-ava fy-ava-ph">${icon('users')}</span>`;
         return `<span class="fy-ava fy-col fy-col-${ms.length}">${ms.map(m => `<img src="${esc(thumb(m.avatar))}" alt="" loading="lazy">`).join('')}</span>`;
@@ -357,7 +360,7 @@ function avaThumbHtml(it) {
 function heroImg(it) {
     if (cfg().heroImage === 'scene' && it.scene) return it.scene;
     if (it.group) {
-        if (isImg(it.g?.avatar_url)) return it.g.avatar_url;
+        if (groupPic(it.g)) return groupPic(it.g);
         return it.members[0] ? full(it.members[0].avatar) : '';
     }
     return it.avatar ? full(it.avatar) : '';
