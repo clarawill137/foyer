@@ -7,7 +7,7 @@
 // из шапки GC / Horae и концовку последнего поста, чтобы на главной было по-человечески.
 
 const MOD = 'foyer';
-const VERSION = '0.2.1';
+const VERSION = '0.3.0';
 const ctx = () => SillyTavern.getContext();
 
 const DEF = {
@@ -496,6 +496,7 @@ function render() {
         </div>
     </header>
     ${heroes.length ? heroes.map((it, i) => heroHtml(it, i)).join('') : `<section class="fy-hero fy-hero-empty"><div class="fy-hero-body"><h2 class="fy-hero-t">Здесь пока тихо</h2><div class="fy-hero-sub">Выбери персонажа ниже или начни временный чат</div></div></section>`}
+    ${chronoHtml()}
     ${ui.search ? `<label class="fy-search">${icon('search')}<input type="search" placeholder="Искать по чатам" value="${esc(ui.q)}" data-fy-q autocomplete="off"><button class="fy-ibtn sm" data-fy="search-x" aria-label="Закрыть">${icon('x')}</button></label>` : ''}
     ${rest.length || ui.q ? `<div class="fy-sec"><h3>${ui.q ? 'Найдено' : 'Недавние'}</h3><small>${ui.q ? '' : rest.length}</small></div>` : ''}
     <div class="fy-list">${rest.length || ui.q ? listHtml(rest) : ''}</div>
@@ -506,6 +507,7 @@ function render() {
         <button class="fy-pill" data-fy="stock-settings">${icon('list')}Сколько чатов</button>
     </div>
     <footer class="fy-foot">${esc(ver || 'SillyTavern')} · Фойе ${VERSION}</footer>`;
+    scrollChrono();
     if (ui.search) {
         const inp = root.querySelector('[data-fy-q]');
         if (inp && document.activeElement !== inp && ui.focusSearch) { inp.focus(); ui.focusSearch = false; }
@@ -514,6 +516,197 @@ function render() {
 
 let rT = 0;
 function renderSoon(ms = 40) { clearTimeout(rT); rT = setTimeout(() => { try { render(); } catch (e) { console.warn('[Фойе] отрисовка', e); } }, ms); }
+
+// ───────────── Хронограф (Священный таймлайн) ─────────────
+// Лента 1917–2025 по Реестру и Хронике мира: эпохи, фиксированные точки; тап по эпохе — карточка и «Войти» (ядро
+// само откроет каноничный чат и переключит всё остальное). Без ядра или без мира — раздела нет.
+
+const chrono = { model: null, loading: false, at: 0, scrolled: false };
+const ST = () => globalThis.SacredTimeline || null;
+
+async function loadChrono(force = false) {
+    const api = ST();
+    if (!api?.chronograph) {
+        // ядро грузится рядом — подождём его немного
+        if ((chrono.tries = (chrono.tries || 0) + 1) <= 6) setTimeout(() => loadChrono(force), 1500);
+        return;
+    }
+    if (chrono.loading) return;
+    if (!force && chrono.model && Date.now() - chrono.at < 60000) return;
+    chrono.loading = true;
+    try {
+        chrono.model = await api.chronograph();
+        chrono.at = Date.now();
+    } catch (e) {
+        console.warn('[Фойе] Хронограф', e);
+    } finally {
+        chrono.loading = false;
+    }
+    renderSoon();
+}
+
+const Y = (d) => Number(String(d || '').slice(0, 4)) || 0;
+const fmtD = (d) => {
+    const m = String(d || '').match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?/);
+    if (!m) return String(d || '');
+    return m[3] ? `${m[3]}.${m[2]}.${m[1]}` : m[2] ? `${MON_S[+m[2] - 1] || m[2]} ${m[1]}` : m[1];
+};
+const span = (a, b) => (b && b !== a ? `${fmtD(a)} — ${fmtD(b)}` : fmtD(a));
+const KIND = { fixed: 'фиксированная точка', event: 'событие', arc: 'отрезок', state: 'состояние' };
+/** Название без даты в начале («03.2020 — переезд» → «переезд»): дата и так стоит рядом. */
+const shortTitle = (t) => {
+    const s = String(t || '');
+    const i = s.indexOf(' — ');
+    return i > 0 && i <= 24 && /\d/.test(s.slice(0, i)) ? s.slice(i + 3) : s;
+};
+
+/** Масштаб: годы с эпохами и фиксированными точками — широкие, пустые — узкие (лента не на километр). */
+function chronoScale(m) {
+    const [a, b] = (m.span || ['1917', '2025']).map(Number);
+    const dense = new Set();
+    for (const e of m.eras) for (let y = Y(e.from); y && y <= (Y(e.to) || b); y++) dense.add(y);
+    for (const ev of m.events) if (ev.kind === 'fixed') dense.add(Y(ev.from));
+    const PX = 46, THIN = 5;
+    const xs = {};
+    let x = 12;
+    for (let y = a; y <= b + 1; y++) { xs[y] = x; x += dense.has(y) ? PX : THIN; }
+    const at = (d) => {
+        const y = Math.min(b, Math.max(a, Y(d) || a));
+        const mo = Number(String(d || '').slice(5, 7)) || 1;
+        return xs[y] + (xs[y + 1] - xs[y]) * ((mo - 1) / 12);
+    };
+    return { at, width: x + 12, dense, a, b };
+}
+
+/** Эпоха последнего чата (для «ты была тут»). */
+function lastEra(m) {
+    const it = heroItems()[0];
+    if (!it) return null;
+    return m.eras.find(e => (it.group && e.group === it.group && e.chats.includes(it.file)) || e.chats.includes(it.file))?.id || null;
+}
+
+function chronoHtml() {
+    const m = chrono.model;
+    if (!m?.eras?.length) return '';
+    const sc = chronoScale(m);
+    const last = lastEra(m);
+    const lanes = [];
+    const bands = m.eras.map(e => {
+        const x = sc.at(e.from);
+        const w = Math.max(112, sc.at(e.to || `${sc.b}-12`) - x);
+        let lane = 0;
+        while ((lanes[lane] ?? -1) > x - 4) lane++;
+        lanes[lane] = x + w;
+        const q = (e.queue?.review || 0) + (e.queue?.nexus || 0);
+        return `<button class="fy-era s-${esc(e.status)}${e.id === last ? ' last' : ''}" data-fy="era" data-era="${esc(e.id)}" style="left:${x.toFixed(0)}px;width:${w.toFixed(0)}px;top:${22 + lane * 46}px">
+            <b>${esc(e.id)}</b><span>${esc(e.label)}</span>${q ? `<i class="fy-era-q${e.queue.nexus ? ' nx' : ''}">${e.queue.nexus ? '🚩' : '🟡'}${q}</i>` : ''}</button>`;
+    });
+    const fixed = m.events.filter(ev => ev.kind === 'fixed').map(ev =>
+        `<button class="fy-fix" data-fy="ev" data-uid="${ev.uid}" style="left:${(sc.at(ev.from) - 6).toFixed(0)}px" aria-label="${esc(ev.title)}">◆</button>`);
+    const ticks = [];
+    for (let y = Math.ceil(sc.a / 10) * 10; y <= sc.b; y += 10) ticks.push(`<i class="fy-tick" style="left:${sc.at(String(y)).toFixed(0)}px">${y}</i>`);
+    const h = 22 + Math.max(1, lanes.length) * 46 + 24;
+    return `
+    <div class="fy-sec"><h3>Хронограф</h3><small>${esc(m.world?.name || '')} · ${esc(m.span.join('–'))}</small></div>
+    <div class="fy-chrono" data-fy-chrono>
+        <div class="fy-chrono-track" style="width:${sc.width.toFixed(0)}px;height:${h}px">
+            <i class="fy-axis" style="top:${h - 22}px"></i>
+            ${ticks.join('')}${fixed.join('')}${bands.join('')}
+        </div>
+    </div>
+    <div class="fy-chrono-foot"><button class="fy-pill" data-fy="chrono-all">${icon('clock')}Вся лента</button>${last ? `<small>последний чат — эпоха ${esc(last)}</small>` : ''}</div>`;
+}
+
+function scrollChrono() {
+    if (chrono.scrolled) return;
+    const el = document.querySelector('#fy-root [data-fy-chrono]');
+    const target = el?.querySelector('.fy-era.last') || el?.querySelector('.fy-era:last-of-type');
+    if (!el || !target) return;
+    el.scrollLeft = Math.max(0, target.offsetLeft - 24);
+    chrono.scrolled = true;
+}
+
+const eraOf = (id) => chrono.model?.eras.find(e => e.id === String(id)) || null;
+const evOf = (uid) => chrono.model?.events.find(e => e.uid === Number(uid)) || null;
+
+function evRow(ev) {
+    return `<button class="fy-row fy-ev k-${esc(ev.kind)}" data-fs="ev" data-uid="${ev.uid}"><span class="fy-ev-d">${esc(fmtD(ev.from))}</span><span class="fy-ev-s">${esc(ev.sym)}</span><span class="fy-ev-t">${esc(shortTitle(ev.title))}${ev.secret ? ' <em>🔒</em>' : ''}</span></button>`;
+}
+
+function eraSheet(id) {
+    const e = eraOf(id);
+    if (!e) return;
+    ui.sheet = { kind: 'era', era: e.id };
+    const evs = chrono.model.events.filter(ev => ev.era === e.id && (ev.kind === 'fixed' || ev.kind === 'event'));
+    const other = e.chats.filter(c => c !== e.canonChat);
+    const q = e.queue || {};
+    openSheet(`
+        <div class="fy-sheet-h"><span><b>${esc(e.id)} · ${esc(e.label)}</b><small>${esc(span(e.from, e.to))}${e.status === 'planned' ? ' · план' : ''}</small></span></div>
+        ${e.cast.length ? `<div class="fy-era-l"><span>Состав</span>${esc(e.cast.join(', '))}</div>` : ''}
+        ${e.persona ? `<div class="fy-era-l"><span>Персона</span>${esc(clip(e.persona, 140))}</div>` : ''}
+        ${q.review || q.nexus ? `<div class="fy-era-l"><span>Канон</span>${q.review ? `🟡 на проверке — ${q.review}` : ''}${q.review && q.nexus ? ' · ' : ''}${q.nexus ? `🚩 нексус — ${q.nexus}` : ''}<small>решать — в чате эпохи: Расширения → Священный таймлайн</small></div>` : ''}
+        ${e.canonChat ? `<button class="fy-row fy-enter" data-fs="enter" data-era="${esc(e.id)}">${icon('play')}Войти<small>${esc(prettyFile(e.canonChat, '') || e.canonChat)}</small></button>`
+        : '<div class="fy-era-l"><span>Чат</span>ещё нет — эпоха в плане</div>'}
+        ${other.map(c => `<button class="fy-row" data-fs="enter" data-era="${esc(e.id)}" data-chat="${esc(c)}">${icon('chat')}${esc(prettyFile(c, '') || c)}<small>другой чат</small></button>`).join('')}
+        ${evs.length ? `<div class="fy-sub">События эпохи</div>${evs.map(evRow).join('')}` : ''}
+        <button class="fy-row" data-fs="chrono-all">${icon('clock')}Вся лента</button>
+        <button class="fy-row fy-cancel" data-fs="close">Закрыть</button>`);
+}
+
+function evSheet(uid) {
+    const ev = evOf(uid);
+    if (!ev) return;
+    ui.sheet = { kind: 'ev', uid: ev.uid };
+    const e = ev.era ? eraOf(ev.era) : null;
+    openSheet(`
+        <div class="fy-sheet-h fy-wrap"><span><b>${esc(ev.sym)} ${esc(shortTitle(ev.title))}</b><small>${ev.approx ? '≈ ' : ''}${esc(span(ev.from, ev.to))} · ${esc(KIND[ev.kind] || ev.kind)}${ev.secret ? ' · 🔒 тайна' : ''}</small></span></div>
+        ${ev.who.length ? `<div class="fy-era-l"><span>Кто</span>${esc(ev.who.join(', '))}</div>` : ''}
+        ${ev.text ? `<div class="fy-ev-text">${esc(ev.text)}</div>` : ''}
+        ${e ? `<button class="fy-row" data-fs="era" data-era="${esc(e.id)}">${icon('arrow')}Эпоха ${esc(e.id)} — ${esc(e.label)}</button>` : ''}
+        <button class="fy-row fy-cancel" data-fs="close">Закрыть</button>`);
+}
+
+/** Вся лента сверху вниз: эпохи карточками, события под годами, пустые десятилетия — одной строкой. */
+function fullSheet() {
+    const m = chrono.model;
+    if (!m) return;
+    ui.sheet = { kind: 'chrono' };
+    const out = [];
+    let prev = 0;
+    const eraStart = new Map(m.eras.map(e => [e.id, false]));
+    const items = [...m.events.filter(ev => ev.kind !== 'state').map(ev => ({ t: 'ev', from: ev.from, ev })),
+        ...m.eras.map(e => ({ t: 'era', from: e.from || '9999', e }))]
+        .sort((a, b) => String(a.from).localeCompare(String(b.from)) || (a.t === 'era' ? -1 : 1));
+    for (const it of items) {
+        const y = Y(it.from);
+        if (prev && y - prev > 6) out.push(`<div class="fy-gap">⋯ ${prev + 1}–${y - 1} ⋯</div>`);
+        if (y !== prev) out.push(`<div class="fy-year">${y}</div>`);
+        prev = y;
+        if (it.t === 'era') {
+            const e = it.e;
+            eraStart.set(e.id, true);
+            out.push(`<button class="fy-row fy-era-row s-${esc(e.status)}" data-fs="era" data-era="${esc(e.id)}"><b>${esc(e.id)}</b><span>${esc(e.label)}<small>${esc(span(e.from, e.to))}${e.status === 'planned' ? ' · план' : ''}</small></span></button>`);
+        } else {
+            out.push(evRow(it.ev));
+        }
+    }
+    openSheet(`
+        <div class="fy-sheet-h"><span><b>Хронограф</b><small>${esc(m.world?.name || '')} · ${esc(m.span.join('–'))} · вид автора: тайное с 🔒</small></span></div>
+        <div class="fy-full">${out.join('')}</div>
+        <button class="fy-row fy-cancel" data-fs="close">Закрыть</button>`);
+}
+
+async function enterEra(id, chat) {
+    const api = ST();
+    if (!api?.enter) return;
+    closeSheet();
+    try {
+        await api.enter(id, chat || undefined);
+    } catch (e) {
+        console.warn('[Фойе] войти в эпоху', e);
+        try { window.toastr?.warning(esc(String(e?.message || e)), 'Хронограф'); } catch { /* */ }
+    }
+}
 
 // ───────────── нижние шторки ─────────────
 
@@ -616,6 +809,10 @@ function onSheetClick(e) {
         case 'lim': s.listShown = Math.min(30, Math.max(2, (+s.listShown || 6) + (+b.getAttribute('data-d') || 0))); save(); settingsSheet(); renderSoon(); break;
         case 'untitle': s.titles = {}; save(); settingsSheet(); renderSoon(); break;
         case 'stock-settings': closeSheet(); mountedPanel?.querySelector('.recentChatsSettings')?.click(); break;
+        case 'enter': enterEra(b.getAttribute('data-era'), b.getAttribute('data-chat')); break;
+        case 'era': eraSheet(b.getAttribute('data-era')); break;
+        case 'ev': evSheet(b.getAttribute('data-uid')); break;
+        case 'chrono-all': fullSheet(); break;
     }
 }
 
@@ -632,6 +829,9 @@ function onClick(e) {
         case 'search-x': ui.search = false; ui.q = ''; render(); break;
         case 'toggle-more': ui.more = !ui.more; render(); break;
         case 'settings': settingsSheet(); break;
+        case 'era': eraSheet(b.getAttribute('data-era')); break;
+        case 'ev': evSheet(b.getAttribute('data-uid')); break;
+        case 'chrono-all': fullSheet(); break;
         case 'temp': mountedPanel?.querySelector('.openTemporaryChat')?.click(); break;
         case 'stock-settings': mountedPanel?.querySelector('.recentChatsSettings')?.click(); break;
         case 'all-chars': document.getElementById('rightNavDrawerIcon')?.click(); break;
@@ -680,7 +880,9 @@ function sync() {
     const fresh = mountedPanel === null;
     mountedPanel = panel;
     ui.busy = '';
+    chrono.scrolled = false;
     render();
+    loadChrono();
     if (fresh) chatEl.scrollTop = 0;
 }
 
