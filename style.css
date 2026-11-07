@@ -99,6 +99,8 @@ body.fy-on.fy-noinput #chat { max-height: 100%; }
     transition: transform .25s var(--fy-ease);
 }
 .fy-hero:active { transform: scale(.985); }
+/* остальные группы — те же большие карточки, чуть ниже первой */
+.fy-hero.fy-hero-more { min-height: clamp(320px, 50vh, 460px); }
 .fy-hero-bg {
     position: absolute; inset: -2px; z-index: -2;
     background-size: cover; background-position: center 28%;
@@ -347,6 +349,7 @@ body.fy-on.fy-noinput #chat { max-height: 100%; }
 @media (min-width: 700px) {
     #fy-root { padding-top: 22px; gap: 16px; }
     .fy-hero { min-height: 460px; }
+    .fy-hero.fy-hero-more { min-height: 380px; }
     .fy-hero-body { padding: 0 26px 24px; }
     .fy-hero-t { font-size: 36px; }
     .fy-head h1 { font-size: 38px; }

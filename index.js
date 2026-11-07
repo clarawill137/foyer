@@ -7,7 +7,7 @@
 // из шапки GC / Horae и концовку последнего поста, чтобы на главной было по-человечески.
 
 const MOD = 'foyer';
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const ctx = () => SillyTavern.getContext();
 
 const DEF = {
@@ -387,14 +387,31 @@ function todayLine() {
     return `${d.toLocaleDateString('ru-RU', { weekday: 'long' })}, ${d.getDate()} ${MON[d.getMonth()]} · ${hm(d)}`;
 }
 
-function heroHtml(it) {
+/**
+ * Большие карточки: самый свежий чат («Продолжить») и у каждой группы — её свежий чат, чтобы группы не путались
+ * в мелком списке. Порядок — по давности, свежие сверху.
+ */
+function heroItems() {
+    if (!items.length) return [];
+    const out = [items[0]];
+    const groups = new Set(items[0].group ? [items[0].group] : []);
+    for (const it of items) {
+        if (!it.group || groups.has(it.group)) continue;
+        groups.add(it.group);
+        out.push(it);
+    }
+    const pos = new Map(items.map((it, i) => [it.key, i]));
+    return out.sort((a, b) => ((b.ts || 0) - (a.ts || 0)) || (pos.get(a.key) - pos.get(b.key)));
+}
+
+function heroHtml(it, n = 0) {
     const cast = it.members.slice(0, 5);
     const names = it.group ? cast.map(m => firstName(m.name)).filter(Boolean).join(' · ') : '';
     const count = it.count ? `${it.count} ${plural(it.count, 'сообщение', 'сообщения', 'сообщений')}` : '';
     const foot = [ago(it.ts) || it.dateText, sizeRu(it.size)].filter(Boolean).join(' · ');
     const quote = it.text ? tailOf(it.text, 420, 4) : '';
     return `
-    <section class="fy-hero${ui.busy === it.key ? ' fy-busy' : ''}" data-fy="open" data-k="${esc(it.key)}">
+    <section class="fy-hero${n ? ' fy-hero-more' : ''}${ui.busy === it.key ? ' fy-busy' : ''}" data-fy="open" data-k="${esc(it.key)}">
         <div class="fy-hero-bg"${bg(heroImg(it))}></div>
         <div class="fy-hero-shade"></div>
         <div class="fy-hero-top">
@@ -430,8 +447,7 @@ function itemHtml(it, n) {
     </article>`;
 }
 
-function listHtml() {
-    const rest = items.slice(1);
+function listHtml(rest) {
     const q = ui.q.trim().toLowerCase();
     const found = q ? items.filter(it => [it.title, it.name, it.sub, it.text].join(' ').toLowerCase().includes(q)) : rest;
     const lim = Math.max(1, +cfg().listShown || 6);
@@ -461,7 +477,9 @@ function render() {
     const panel = mountedPanel;
     if (!root || !panel) return;
     items = stockItems(panel).map(enrich);
-    const hero = items[0];
+    const heroes = heroItems();
+    const big = new Set(heroes.map(it => it.key));
+    const rest = items.filter(it => !big.has(it.key));
     const ver = (panel.querySelector('.welcomeHeaderVersionDisplay')?.textContent || '').trim();
     root.innerHTML = `
     <header class="fy-head">
@@ -474,10 +492,10 @@ function render() {
             <button class="fy-ibtn" data-fy="settings" aria-label="Настройки">${icon('gear')}</button>
         </div>
     </header>
-    ${hero ? heroHtml(hero) : `<section class="fy-hero fy-hero-empty"><div class="fy-hero-body"><h2 class="fy-hero-t">Здесь пока тихо</h2><div class="fy-hero-sub">Выбери персонажа ниже или начни временный чат</div></div></section>`}
+    ${heroes.length ? heroes.map((it, i) => heroHtml(it, i)).join('') : `<section class="fy-hero fy-hero-empty"><div class="fy-hero-body"><h2 class="fy-hero-t">Здесь пока тихо</h2><div class="fy-hero-sub">Выбери персонажа ниже или начни временный чат</div></div></section>`}
     ${ui.search ? `<label class="fy-search">${icon('search')}<input type="search" placeholder="Искать по чатам" value="${esc(ui.q)}" data-fy-q autocomplete="off"><button class="fy-ibtn sm" data-fy="search-x" aria-label="Закрыть">${icon('x')}</button></label>` : ''}
-    ${items.length > 1 || ui.q ? `<div class="fy-sec"><h3>${ui.q ? 'Найдено' : 'Недавние'}</h3><small>${items.length}</small></div>` : ''}
-    <div class="fy-list">${items.length > 1 || ui.q ? listHtml() : ''}</div>
+    ${rest.length || ui.q ? `<div class="fy-sec"><h3>${ui.q ? 'Найдено' : 'Недавние'}</h3><small>${ui.q ? '' : rest.length}</small></div>` : ''}
+    <div class="fy-list">${rest.length || ui.q ? listHtml(rest) : ''}</div>
     ${shelfHtml()}
     <div class="fy-actions">
         <button class="fy-pill" data-fy="temp">${icon('spark')}Временный чат</button>
@@ -627,7 +645,7 @@ function onInput(e) {
     if (!e.target.matches?.('[data-fy-q]')) return;
     ui.q = e.target.value || '';
     const list = document.querySelector('#fy-root .fy-list');
-    if (list) list.innerHTML = listHtml();
+    if (list) { const big = new Set(heroItems().map(it => it.key)); list.innerHTML = listHtml(items.filter(it => !big.has(it.key))); }
     const h = document.querySelector('#fy-root .fy-sec h3');
     if (h) h.textContent = ui.q ? 'Найдено' : 'Недавние';
 }
