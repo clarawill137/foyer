@@ -7,7 +7,7 @@
 // из шапки GC / Horae и концовку последнего поста, чтобы на главной было по-человечески.
 
 const MOD = 'foyer';
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const ctx = () => SillyTavern.getContext();
 
 const DEF = {
@@ -43,6 +43,7 @@ const MON_S = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'ию
 const I = {
     arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
     play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     more: '<circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/>',
     pin: '<path d="M12 16.5V22M8.5 3h7l-1 5.5 3 3.5v2h-11v-2l3-3.5z"/>',
     search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
@@ -629,8 +630,52 @@ function scrollChrono() {
 const eraOf = (id) => chrono.model?.eras.find(e => e.id === String(id)) || null;
 const evOf = (uid) => chrono.model?.events.find(e => e.uid === Number(uid)) || null;
 
+/** Ждёт ли событие сцены: в какой-то эпохе оно в «что было» не попадёт, пока не отмечено сыгранным. */
+const evWaits = (ev) => !!ev.waits?.length && !ev.played;
+
 function evRow(ev) {
-    return `<button class="fy-row fy-ev k-${esc(ev.kind)}" data-fs="ev" data-uid="${ev.uid}"><span class="fy-ev-d">${esc(fmtD(ev.from))}</span><span class="fy-ev-s">${esc(ev.sym)}</span><span class="fy-ev-t">${esc(shortTitle(ev.title))}${ev.secret ? ' <em>🔒</em>' : ''}</span></button>`;
+    return `<button class="fy-row fy-ev k-${esc(ev.kind)}${evWaits(ev) ? ' waits' : ''}" data-fs="ev" data-uid="${ev.uid}"><span class="fy-ev-d">${esc(fmtD(ev.from))}</span><span class="fy-ev-s">${esc(ev.sym)}</span><span class="fy-ev-t">${esc(shortTitle(ev.title))}${ev.secret ? ' <em>🔒</em>' : ''}${evWaits(ev) ? ' <em class="fy-wait">ждёт сцены</em>' : ev.manual ? ' <em class="fy-done">✓</em>' : ''}</span></button>`;
+}
+
+/** Строка «Сцена» и кнопка отметки — только у событий, которым отметка что-то меняет (и если ядро это умеет). */
+function playedHtml(ev) {
+    if (!ev.waits?.length && !ev.manual) return '';
+    const where = (ev.waits || []).map(id => eraOf(id)?.label || id).join(', ');
+    const can = typeof ST()?.played === 'function';
+    if (!ev.played) {
+        const what = ev.kind === 'fixed'
+            ? `финал эпохи «${esc(where)}»: пока не отмечена, она впереди — как и всё, что в этом финале случается и узнаётся`
+            : `не отмечена — в эпохе «${esc(where)}» сводка «что было» её не покажет`;
+        return `<div class="fy-era-l"><span>Сцена</span>${what}</div>
+        ${can ? `<button class="fy-row fy-enter" data-fs="played" data-uid="${ev.uid}" data-v="1">${icon('check')}Сыграно<small>отметить в Хронике</small></button>` : ''}`;
+    }
+    if (!ev.manual) return '<div class="fy-era-l"><span>Сцена</span>сыграна — пришла из чата</div>';
+    return `<div class="fy-era-l"><span>Сцена</span>сыграна${ev.playedAt ? ` — ${esc(fmtD(ev.playedAt))}` : ''}</div>
+        ${can ? `<button class="fy-row" data-fs="played" data-uid="${ev.uid}" data-v="0">${icon('x')}Снять отметку</button>` : ''}`;
+}
+
+async function markPlayed(uid, on) {
+    const api = ST();
+    if (!api?.played) return;
+    try {
+        await api.played(Number(uid), on);
+        chrono.model = await api.chronograph();
+        chrono.at = Date.now();
+    } catch (e) {
+        console.warn('[Фойе] отметка «сыграно»', e);
+        try { window.toastr?.warning(esc(String(e?.message || e)), 'Хронограф'); } catch { /* */ }
+    }
+    evSheet(uid);
+    renderSoon();
+}
+
+/** Финал эпохи: её фиксированные точки последнего месяца — сыграны все или сколько ещё ждут отметки. */
+function finaleHtml(e) {
+    if (!e.to) return '';
+    const fin = chrono.model.events.filter(ev => ev.kind === 'fixed' && ev.from === e.to);
+    if (!fin.length) return '';
+    const left = fin.filter(ev => !ev.played).length;
+    return `<div class="fy-era-l"><span>Финал</span>${e.finale || !left ? 'сыгран ✓' : `впереди — ждут отметки «сыграно»: ${left} из ${fin.length}`}</div>`;
 }
 
 function eraSheet(id) {
@@ -643,6 +688,7 @@ function eraSheet(id) {
     openSheet(`
         <div class="fy-sheet-h"><span><b>${esc(e.id)} · ${esc(e.label)}</b><small>${esc(span(e.from, e.to))}${e.status === 'planned' ? ' · план' : ''}</small></span></div>
         ${e.cast.length ? `<div class="fy-era-l"><span>Состав</span>${esc(e.cast.join(', '))}</div>` : ''}
+        ${finaleHtml(e)}
         ${e.persona ? `<div class="fy-era-l"><span>Персона</span>${esc(clip(e.persona, 140))}</div>` : ''}
         ${q.review || q.nexus ? `<div class="fy-era-l"><span>Канон</span>${q.review ? `🟡 на проверке — ${q.review}` : ''}${q.review && q.nexus ? ' · ' : ''}${q.nexus ? `🚩 нексус — ${q.nexus}` : ''}<small>решать — в чате эпохи: Расширения → Священный таймлайн</small></div>` : ''}
         ${e.canonChat ? `<button class="fy-row fy-enter" data-fs="enter" data-era="${esc(e.id)}">${icon('play')}Войти<small>${esc(prettyFile(e.canonChat, '') || e.canonChat)}</small></button>`
@@ -661,6 +707,7 @@ function evSheet(uid) {
     openSheet(`
         <div class="fy-sheet-h fy-wrap"><span><b>${esc(ev.sym)} ${esc(shortTitle(ev.title))}</b><small>${ev.approx ? '≈ ' : ''}${esc(span(ev.from, ev.to))} · ${esc(KIND[ev.kind] || ev.kind)}${ev.secret ? ' · 🔒 тайна' : ''}</small></span></div>
         ${ev.who.length ? `<div class="fy-era-l"><span>Кто</span>${esc(ev.who.join(', '))}</div>` : ''}
+        ${playedHtml(ev)}
         ${ev.text ? `<div class="fy-ev-text">${esc(ev.text)}</div>` : ''}
         ${e ? `<button class="fy-row" data-fs="era" data-era="${esc(e.id)}">${icon('arrow')}Эпоха ${esc(e.id)} — ${esc(e.label)}</button>` : ''}
         <button class="fy-row fy-cancel" data-fs="close">Закрыть</button>`);
@@ -812,6 +859,7 @@ function onSheetClick(e) {
         case 'enter': enterEra(b.getAttribute('data-era'), b.getAttribute('data-chat')); break;
         case 'era': eraSheet(b.getAttribute('data-era')); break;
         case 'ev': evSheet(b.getAttribute('data-uid')); break;
+        case 'played': b.disabled = true; markPlayed(b.getAttribute('data-uid'), b.getAttribute('data-v') === '1'); break;
         case 'chrono-all': fullSheet(); break;
     }
 }

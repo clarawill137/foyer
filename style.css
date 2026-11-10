@@ -394,6 +394,8 @@ body.fy-on.fy-noinput #chat { max-height: 100%; }
 #fy-sheet .fy-ev.k-fixed .fy-ev-s { color: var(--fy-rose); }
 #fy-sheet .fy-ev-t { font-size: 14.5px; line-height: 1.3; }
 #fy-sheet .fy-ev-t em { font-style: normal; font-size: 12px; }
+#fy-sheet .fy-ev-t em.fy-wait { margin-left: 4px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--fy-rose); color: var(--fy-rose); font-size: 11px; white-space: nowrap; }
+#fy-sheet .fy-ev-t em.fy-done { color: var(--fy-dim); }
 #fy-sheet .fy-ev-text { white-space: pre-wrap; padding: 8px 12px; font-size: 14px; line-height: 1.5; color: var(--fy-text2); }
 #fy-sheet .fy-full { display: flex; flex-direction: column; }
 #fy-sheet .fy-year { padding: 12px 12px 2px; font-family: var(--fy-serif); font-size: 18px; color: var(--fy-rose2); }
