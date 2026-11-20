@@ -7,7 +7,7 @@
 // из шапки GC / Horae и концовку последнего поста, чтобы на главной было по-человечески.
 
 const MOD = 'foyer';
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const ctx = () => SillyTavern.getContext();
 
 const DEF = {
@@ -18,6 +18,8 @@ const DEF = {
     listShown: 6,
     snaps: {},
     titles: {},
+    arch: { chats: {}, cards: {} },   // архив: спрятано с главной, ничего не удалено
+    pins: {},                         // карточки, закреплённые на полке
 };
 
 function cfg() {
@@ -30,6 +32,36 @@ function cfg() {
     return s;
 }
 const save = () => { try { ctx().saveSettingsDebounced(); } catch { /* */ } };
+
+// ───────────── архив и закрепы ─────────────
+// Архив — это «не показывать на главной»: файл чата и карточка остаются как были. Ключ чата — как у снимков
+// («c:аватар|файл», «g:группа|файл»), ключ карточки — «c:аватар» или «g:группа».
+
+function arch() {
+    const s = cfg();
+    if (!s.arch || typeof s.arch !== 'object') s.arch = {};
+    for (const k of ['chats', 'cards']) if (!s.arch[k] || typeof s.arch[k] !== 'object' || Array.isArray(s.arch[k])) s.arch[k] = {};
+    return s.arch;
+}
+const ownerKey = (o) => (o?.group ? `g:${o.group}` : `c:${o?.avatar || ''}`);
+const chatKey = (o, file) => `${ownerKey(o)}|${String(file || '').replace(/\.jsonl$/i, '')}`;
+/** Ключ чата обратно в { avatar | group, file }. В имени файла «|» не бывает, в аватаре — может: режем по последнему. */
+function parseKey(key) {
+    const k = String(key || '');
+    const cut = k.lastIndexOf('|');
+    const head = cut < 0 ? k : k.slice(0, cut), file = cut < 0 ? '' : k.slice(cut + 1);
+    return head.startsWith('g:') ? { group: head.slice(2), file } : { avatar: head.replace(/^c:/, ''), file };
+}
+const cardArch = (o) => !!arch().cards[ownerKey(o)];
+const chatArch = (key) => !!arch().chats[key];
+/** Чат не на главной: сам в архиве или в архиве его карточка. */
+const hidden = (it) => chatArch(it.key) || cardArch(it);
+const archCount = () => Object.keys(arch().chats).length + Object.keys(arch().cards).length;
+function setArch(kind, key, on) {
+    const a = arch()[kind];
+    if (on) a[key] = Date.now(); else delete a[key];
+    save();
+}
 
 // ───────────── мелочи ─────────────
 
@@ -60,6 +92,12 @@ const I = {
     users: '<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5c.6-3.4 3-5.3 6-5.3s5.4 1.9 6 5.3"/><path d="M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.6c1.8.6 3 2.3 3.5 4.9"/>',
     list: '<path d="M8 6.5h12M8 12h12M8 17.5h12"/><circle cx="4" cy="6.5" r=".9" fill="currentColor"/><circle cx="4" cy="12" r=".9" fill="currentColor"/><circle cx="4" cy="17.5" r=".9" fill="currentColor"/>',
     star: '<path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.3L12 16l-4.9 2.6 1.1-5.3-4-3.7 5.4-.6z"/>',
+    box: '<path d="M3.5 7.5h17v3h-17zM5 10.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8.5M9.5 14h5"/><path d="M5.5 7.5 7 4h10l1.5 3.5"/>',
+    back: '<path d="M8.5 7 4 11.5 8.5 16"/><path d="M4 11.5h10a5.5 5.5 0 0 1 0 11h-2"/>',
+    user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.7-3.8 3.5-6 7-6s6.3 2.2 7 6"/>',
+    book: '<path d="M12 6.5C10 5 7 4.5 4 5v13c3-.5 6 0 8 1.5 2-1.5 5-2 8-1.5V5c-3-.5-6 0-8 1.5zM12 6.5v13"/>',
+    grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><path d="M16.75 13.5V20M13.5 16.75H20"/>',
+    plug: '<path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0zM12 17v4"/>',
 };
 const icon = (n, cls = '') => `<svg class="fy-i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n] || ''}</svg>`;
 
@@ -370,16 +408,19 @@ function heroImg(it) {
 function charShelf() {
     const c = ctx();
     const fav = (ch) => (ch.fav === true || ch.fav === 'true' ? 1 : 0);
+    const pins = cfg().pins || {};
+    const pin = (ch) => (pins[ch.avatar] ? 1 : 0);
     return (c.characters || []).map((ch, i) => ({ ch, i }))
-        .filter(x => x.ch?.avatar && x.ch.avatar !== 'none' && !/^default_Assistant\.png$/i.test(x.ch.avatar))
-        .sort((a, b) => (fav(b.ch) - fav(a.ch)) || ((+b.ch.date_last_chat || 0) - (+a.ch.date_last_chat || 0)))
+        .filter(x => x.ch?.avatar && x.ch.avatar !== 'none' && !/^default_Assistant\.png$/i.test(x.ch.avatar) && !cardArch({ avatar: x.ch.avatar }))
+        .sort((a, b) => (pin(b.ch) - pin(a.ch)) || (fav(b.ch) - fav(a.ch)) || ((+b.ch.date_last_chat || 0) - (+a.ch.date_last_chat || 0)))
         .slice(0, 18);
 }
 
 // ───────────── экран ─────────────
 
 const ui = { busy: '', q: '', search: false, more: false, sheet: null };
-let items = [];
+let items = [];          // все чаты стоковой панели
+let live = [];           // те же без архива — то, что видно на главной
 let mountedPanel = null;
 
 function greeting() {
@@ -396,15 +437,15 @@ function todayLine() {
  * в мелком списке. Порядок — по давности, свежие сверху.
  */
 function heroItems() {
-    if (!items.length) return [];
-    const out = [items[0]];
-    const groups = new Set(items[0].group ? [items[0].group] : []);
-    for (const it of items) {
+    if (!live.length) return [];
+    const out = [live[0]];
+    const groups = new Set(live[0].group ? [live[0].group] : []);
+    for (const it of live) {
         if (!it.group || groups.has(it.group)) continue;
         groups.add(it.group);
         out.push(it);
     }
-    const pos = new Map(items.map((it, i) => [it.key, i]));
+    const pos = new Map(live.map((it, i) => [it.key, i]));
     return out.sort((a, b) => ((b.ts || 0) - (a.ts || 0)) || (pos.get(a.key) - pos.get(b.key)));
 }
 
@@ -453,7 +494,7 @@ function itemHtml(it, n) {
 
 function listHtml(rest) {
     const q = ui.q.trim().toLowerCase();
-    const found = q ? items.filter(it => [it.title, it.name, it.sub, it.text].join(' ').toLowerCase().includes(q)) : rest;
+    const found = q ? live.filter(it => [it.title, it.name, it.sub, it.text].join(' ').toLowerCase().includes(q)) : rest;
     const lim = Math.max(1, +cfg().listShown || 6);
     const shown = q || ui.more ? found : found.slice(0, lim);
     if (!found.length) return `<div class="fy-empty">${q ? 'Ничего не нашлось' : 'Других чатов пока нет'}</div>`;
@@ -466,14 +507,32 @@ function shelfHtml() {
     const list = charShelf();
     if (!list.length) return '';
     const fav = (ch) => ch.fav === true || ch.fav === 'true';
+    const pins = cfg().pins || {};
     return `
     <div class="fy-sec"><h3>Персонажи</h3><button class="fy-link" data-fy="all-chars">все ${icon('arrow')}</button></div>
     <div class="fy-shelf">
-        ${list.map(({ ch, i }) => `<button class="fy-person" data-fy="char" data-i="${i}">
-            <span class="fy-person-a"><img src="${esc(thumb(ch.avatar))}" alt="" loading="lazy" onerror="this.remove()"><i>${esc(firstName(ch.name).slice(0, 1))}</i>${fav(ch) ? `<em>${icon('star')}</em>` : ''}</span>
+        ${list.map(({ ch, i }) => `<button class="fy-person" data-fy="char" data-i="${i}" data-av="${esc(ch.avatar)}">
+            <span class="fy-person-a"><img src="${esc(thumb(ch.avatar))}" alt="" loading="lazy" onerror="this.remove()"><i>${esc(firstName(ch.name).slice(0, 1))}</i>${pins[ch.avatar] ? `<em>${icon('pin')}</em>` : fav(ch) ? `<em>${icon('star')}</em>` : ''}</span>
             <span class="fy-person-n">${esc(firstName(ch.name))}</span>
         </button>`).join('')}
     </div>`;
+}
+
+/** Окна Life, которые живут вне чата (персоны, лорбуки, расширения, подключение) — если Life стоит и умеет. */
+const LIFE_WINS = { personas: ['user', 'Персоны'], books: ['book', 'Лорбуки'], exts: ['grid', 'Расширения'], link: ['plug', 'Подключение'] };
+function lifeWins() {
+    try {
+        const L = globalThis.LifeWin;
+        if (!L || typeof L.open !== 'function') return [];
+        const ids = typeof L.list === 'function' ? L.list() : Object.keys(LIFE_WINS);
+        return (Array.isArray(ids) ? ids : []).filter(id => LIFE_WINS[id]);
+    } catch { return []; }
+}
+function lifeHtml() {
+    const ids = lifeWins();
+    if (!ids.length) return '';
+    return `<div class="fy-sec"><h3>Таверна</h3><small>окна Life</small></div>
+    <div class="fy-actions fy-wins">${ids.map(id => `<button class="fy-pill" data-fy="life-win" data-v="${id}">${icon(LIFE_WINS[id][0])}${LIFE_WINS[id][1]}</button>`).join('')}</div>`;
 }
 
 function render() {
@@ -481,9 +540,11 @@ function render() {
     const panel = mountedPanel;
     if (!root || !panel) return;
     items = stockItems(panel).map(enrich);
+    live = items.filter(it => !hidden(it));
     const heroes = heroItems();
     const big = new Set(heroes.map(it => it.key));
-    const rest = items.filter(it => !big.has(it.key));
+    const rest = live.filter(it => !big.has(it.key));
+    const nArch = archCount();
     const ver = (panel.querySelector('.welcomeHeaderVersionDisplay')?.textContent || '').trim();
     root.innerHTML = `
     <header class="fy-head">
@@ -496,16 +557,18 @@ function render() {
             <button class="fy-ibtn" data-fy="settings" aria-label="Настройки">${icon('gear')}</button>
         </div>
     </header>
-    ${heroes.length ? heroes.map((it, i) => heroHtml(it, i)).join('') : `<section class="fy-hero fy-hero-empty"><div class="fy-hero-body"><h2 class="fy-hero-t">Здесь пока тихо</h2><div class="fy-hero-sub">Выбери персонажа ниже или начни временный чат</div></div></section>`}
+    ${heroes.length ? heroes.map((it, i) => heroHtml(it, i)).join('') : `<section class="fy-hero fy-hero-empty"><div class="fy-hero-body"><h2 class="fy-hero-t">Здесь пока тихо</h2><div class="fy-hero-sub">${items.length ? 'Все чаты в архиве — он внизу страницы' : 'Выбери персонажа ниже или начни временный чат'}</div></div></section>`}
     ${chronoHtml()}
     ${ui.search ? `<label class="fy-search">${icon('search')}<input type="search" placeholder="Искать по чатам" value="${esc(ui.q)}" data-fy-q autocomplete="off"><button class="fy-ibtn sm" data-fy="search-x" aria-label="Закрыть">${icon('x')}</button></label>` : ''}
     ${rest.length || ui.q ? `<div class="fy-sec"><h3>${ui.q ? 'Найдено' : 'Недавние'}</h3><small>${ui.q ? '' : rest.length}</small></div>` : ''}
     <div class="fy-list">${rest.length || ui.q ? listHtml(rest) : ''}</div>
     ${shelfHtml()}
+    ${lifeHtml()}
     <div class="fy-actions">
         <button class="fy-pill" data-fy="temp">${icon('spark')}Временный чат</button>
         <button class="fy-pill" data-fy="all-chars">${icon('users')}Персонажи</button>
         <button class="fy-pill" data-fy="stock-settings">${icon('list')}Сколько чатов</button>
+        ${nArch ? `<button class="fy-pill" data-fy="archive">${icon('box')}Архив · ${nArch}</button>` : ''}
     </div>
     <footer class="fy-foot">${esc(ver || 'SillyTavern')} · Фойе ${VERSION}</footer>`;
     scrollChrono();
@@ -786,7 +849,9 @@ function moreSheet(it) {
         <div class="fy-sheet-h">${avaThumbHtml(it)}<span><b>${esc(it.title)}</b><small>${esc(it.sub || it.name)}</small></span></div>
         <button class="fy-row" data-fs="open">${icon('play')}Открыть</button>
         <button class="fy-row" data-fs="pin">${icon('pin')}${it.pinned ? 'Открепить' : 'Закрепить сверху'}</button>
+        <button class="fy-row" data-fs="card">${icon('list')}Все чаты<small>${esc(cleanGroupName(it.name))}</small></button>
         <button class="fy-row" data-fs="title">${icon('tag')}Своё название в Фойе${cfg().titles[it.key] ? `<small>${esc(cfg().titles[it.key])}</small>` : ''}</button>
+        <button class="fy-row" data-fs="arch-chat" data-k="${esc(it.key)}">${icon(chatArch(it.key) ? 'back' : 'box')}${chatArch(it.key) ? 'Вернуть из архива' : 'В архив'}<small>${chatArch(it.key) ? '' : 'не удаляя'}</small></button>
         <button class="fy-row" data-fs="rename">${icon('edit')}Переименовать файл чата</button>
         <button class="fy-row fy-danger" data-fs="delete">${icon('trash')}Удалить чат</button>
         <button class="fy-row fy-cancel" data-fs="close">Отмена</button>`);
@@ -808,8 +873,215 @@ function settingsSheet() {
         ${tog('hideInput', 'Прятать поле ввода', 'на главной оно всё равно открывает чат с ассистентом')}
         ${tog('showChars', 'Полка персонажей')}
         <button class="fy-row" data-fs="stock-settings">${icon('list')}Сколько чатов грузить (настройка ST)</button>
+        <button class="fy-row" data-fs="archive">${icon('box')}Архив<small>${archCount() || 'пусто'}</small></button>
         ${Object.keys(s.titles || {}).length ? `<button class="fy-row" data-fs="untitle">${icon('tag')}Забыть свои названия<small>${Object.keys(s.titles).length}</small></button>` : ''}
         <button class="fy-row fy-cancel" data-fs="close">Готово</button>`);
+}
+
+// ───────────── карточка: все её чаты ─────────────
+// Стоковая главная знает только «недавние» — сколько их грузить, решает настройка таверны. Список всех чатов
+// карточки или группы берём у сервера сами, но только когда шторку открыли: главная запросов не добавляет.
+
+const card = { owner: null, list: null, err: '', seq: 0, busy: '' };
+const sameOwner = (a, b) => !!a && !!b && ownerKey(a) === ownerKey(b);
+const headers = () => { try { return ctx().getRequestHeaders(); } catch { return { 'Content-Type': 'application/json' }; } };
+const charOf = (avatar) => (ctx().characters || []).find(x => x?.avatar === avatar) || null;
+const groupOf = (id) => (ctx().groups || []).find(x => String(x?.id) === String(id)) || null;
+const ownerName = (o) => (o?.group ? cleanGroupName(groupOf(o.group)?.name) : charOf(o?.avatar)?.name) || '';
+const ownerHere = (o) => !!(o?.group ? groupOf(o.group) : charOf(o?.avatar));
+
+/** Ответ сервера про чат → строка списка. */
+function chatRow(o, d) {
+    const file = String(d?.file_name || d?.file_id || '').replace(/\.jsonl$/i, '');
+    if (!file) return null;
+    const key = chatKey(o, file);
+    const name = ownerName(o);
+    const title = cfg().titles[key] || prettyFile(file, name) || file;
+    return { key, file, title, count: +d.chat_items || 0, size: d.file_size || '', ts: tsOf(d.last_mes), text: tailOf(tailText(proseLines(typeof d.mes === 'string' ? d.mes : ''), 200), 120).replace(/\s*\n\s*/g, ' ') };
+}
+
+async function fetchCardChats(o) {
+    if (o.group) {
+        const g = groupOf(o.group);
+        const ids = [...new Set((g?.chats || []).map(String))];
+        const out = [];
+        let k = 0;
+        // по четыре за раз: на каждый чат группы у таверны отдельный запрос
+        const worker = async () => {
+            while (k < ids.length) {
+                const id = ids[k++];
+                try {
+                    const r = await fetch('/api/chats/group/info', { method: 'POST', headers: headers(), body: JSON.stringify({ id }) });
+                    if (r.ok) { const row = chatRow(o, await r.json()); if (row) out.push(row); }
+                } catch { /* чат без файла — пропускаем */ }
+            }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        return out;
+    }
+    const r = await fetch('/api/characters/chats', { method: 'POST', headers: headers(), body: JSON.stringify({ avatar_url: o.avatar }) });
+    if (!r.ok) throw new Error(`сервер не отдал чаты (${r.status})`);
+    const data = await r.json();
+    return (Array.isArray(data) ? data : []).map(d => chatRow(o, d)).filter(Boolean);
+}
+
+/** Какой чат у карточки открыт «по умолчанию» — его таверна откроет по тапу на карточку. */
+const currentFile = (o) => String((o.group ? groupOf(o.group)?.chat_id : charOf(o.avatar)?.chat) || '');
+
+function cardRow(o, c, archived) {
+    const sub = [c.count ? `${c.count} ${plural(c.count, 'сообщение', 'сообщения', 'сообщений')}` : 'пусто', ago(c.ts, true), sizeRu(c.size)].filter(Boolean).join(' · ');
+    return `<div class="fy-chat${archived ? ' off' : ''}${card.busy === c.key ? ' fy-busy' : ''}">
+        <button class="fy-chat-m" data-fs="card-open" data-file="${esc(c.file)}"><b>${esc(c.title)}${c.file === currentFile(o) ? '<i>текущий</i>' : ''}</b><small>${esc(sub)}</small>${c.text ? `<span>${esc(c.text)}</span>` : ''}</button>
+        <button class="fy-ibtn sm" data-fs="arch-chat" data-k="${esc(c.key)}" aria-label="${archived ? 'Вернуть из архива' : 'В архив'}" title="${archived ? 'вернуть из архива' : 'в архив'}">${icon(archived ? 'back' : 'box')}</button>
+    </div>`;
+}
+
+function cardSheetHtml() {
+    const o = card.owner;
+    const name = ownerName(o) || 'Карточка';
+    const list = card.list ? [...card.list].sort((a, b) => (b.ts || 0) - (a.ts || 0)) : null;
+    const on = list ? list.filter(c => !chatArch(c.key)) : [];
+    const off = list ? list.filter(c => chatArch(c.key)) : [];
+    const gone = cardArch(o);
+    const ava = o.group
+        ? avaThumbHtml({ group: o.group, g: groupOf(o.group), members: (groupOf(o.group)?.members || []).map(charOf).filter(Boolean) })
+        : avaThumbHtml({ avatar: o.avatar });
+    const pinned = !o.group && !!cfg().pins?.[o.avatar];
+    return `
+        <div class="fy-sheet-h">${ava}<span><b>${esc(name)}</b><small>${list ? `${list.length} ${plural(list.length, 'чат', 'чата', 'чатов')}${off.length ? ` · в архиве ${off.length}` : ''}` : 'загружаю чаты…'}${gone ? ' · карточка в архиве' : ''}</small></span></div>
+        ${card.err ? `<div class="fy-era-l"><span>Не вышло</span>${esc(card.err)}</div>` : ''}
+        ${ownerHere(o) ? `<button class="fy-row fy-enter" data-fs="card-last">${icon('play')}Продолжить последний</button>` : ''}
+        ${list ? (on.length ? `<div class="fy-sub">Чаты</div>${on.map(c => cardRow(o, c, false)).join('')}` : `<div class="fy-era-l"><span>Чаты</span>${list.length ? 'все в архиве' : 'пока ни одного'}</div>`) : ''}
+        ${off.length ? `<details class="fy-arch"${ui.archOpen ? ' open' : ''}><summary>В архиве — ${off.length}</summary>${off.map(c => cardRow(o, c, true)).join('')}</details>` : ''}
+        ${o.group ? '' : `<button class="fy-row" data-fs="card-pin">${icon('pin')}${pinned ? 'Открепить с полки' : 'Закрепить на полке'}</button>`}
+        <button class="fy-row" data-fs="arch-card">${icon(gone ? 'back' : 'box')}${gone ? 'Вернуть карточку из архива' : 'Карточку в архив'}<small>${gone ? '' : 'убрать с главной'}</small></button>
+        <button class="fy-row fy-cancel" data-fs="${ui.sheet?.from === 'archive' ? 'archive' : 'close'}">${ui.sheet?.from === 'archive' ? 'К архиву' : 'Закрыть'}</button>`;
+}
+
+/** Перерисовать открытую шторку карточки, не дёргая её анимацию и прокрутку. */
+function cardRepaint() {
+    const box = document.querySelector('#fy-sheet .fy-sheet');
+    if (!box || ui.sheet?.kind !== 'card') return;
+    const top = box.scrollTop;
+    ui.archOpen = !!box.querySelector('.fy-arch')?.open;
+    box.innerHTML = cardSheetHtml();
+    box.scrollTop = top;
+}
+
+async function cardSheet(o, from = '') {
+    if (!o || (!o.group && !o.avatar)) return;
+    const again = sameOwner(card.owner, o) && card.list;
+    card.owner = o.group ? { group: String(o.group) } : { avatar: o.avatar };
+    if (!again) card.list = null;
+    card.err = ''; card.busy = '';
+    ui.archOpen = false;
+    ui.sheet = { kind: 'card', from };
+    openSheet(cardSheetHtml());
+    const seq = ++card.seq;
+    try {
+        const list = await fetchCardChats(card.owner);
+        if (seq !== card.seq) return;   // пока грузилось, открыли другую карточку
+        card.list = list;
+    } catch (e) {
+        if (seq !== card.seq) return;
+        card.err = String(e?.message || e);
+        if (!card.list) card.list = [];
+    }
+    cardRepaint();
+}
+
+// ───────────── архив ─────────────
+
+function archSheet() {
+    const a = arch();
+    ui.sheet = { kind: 'archive' };
+    const cards = Object.keys(a.cards).map(k => (k.startsWith('g:') ? { group: k.slice(2) } : { avatar: k.replace(/^c:/, '') }));
+    const chats = Object.keys(a.chats).map(k => ({ key: k, ...parseKey(k) }));
+    const cardRowHtml = (o) => {
+        const here = ownerHere(o);
+        const name = ownerName(o) || (o.group ? 'группа, которой уже нет' : String(o.avatar).replace(/\.png$/i, ''));
+        return `<div class="fy-chat${here ? '' : ' off'}">
+            <button class="fy-chat-m" data-fs="arch-open-card" data-o="${esc(ownerKey(o))}"${here ? '' : ' disabled'}><b>${esc(name)}</b><small>${o.group ? 'группа' : 'карточка'}${here ? ' · тап — её чаты' : ' · в таверне её уже нет'}</small></button>
+            <button class="fy-ibtn sm" data-fs="arch-card" data-o="${esc(ownerKey(o))}" aria-label="Вернуть" title="вернуть на главную">${icon('back')}</button>
+        </div>`;
+    };
+    const chatRowHtml = (c) => {
+        const name = ownerName(c);
+        const title = cfg().titles[c.key] || prettyFile(c.file, name) || c.file;
+        return `<div class="fy-chat">
+            <button class="fy-chat-m" data-fs="arch-open-chat" data-k="${esc(c.key)}"${ownerHere(c) ? '' : ' disabled'}><b>${esc(title)}</b><small>${esc(name || 'карточки уже нет')}</small></button>
+            <button class="fy-ibtn sm" data-fs="arch-chat" data-k="${esc(c.key)}" aria-label="Вернуть" title="вернуть на главную">${icon('back')}</button>
+        </div>`;
+    };
+    openSheet(`
+        <div class="fy-sheet-h"><span><b>Архив</b><small>убрано с главной — файлы и карточки целы</small></span></div>
+        ${cards.length ? `<div class="fy-sub">Карточки</div>${cards.map(cardRowHtml).join('')}` : ''}
+        ${chats.length ? `<div class="fy-sub">Чаты</div>${chats.map(chatRowHtml).join('')}` : ''}
+        ${!cards.length && !chats.length ? '<div class="fy-era-l"><span>Пусто</span>В архив чат уходит через ⋯ у чата, карточка — из списка её чатов (тап по персонажу на полке).</div>' : ''}
+        <button class="fy-row fy-cancel" data-fs="close">Закрыть</button>`);
+}
+
+// ───────────── открыть чат, которого нет среди недавних ─────────────
+
+let groupsModule = null;
+async function groupsApi() {
+    if (groupsModule) return groupsModule;
+    for (const path of ['../../../group-chats.js', '/scripts/group-chats.js']) {
+        try { const m = await import(path); if (typeof m?.openGroupById === 'function') { groupsModule = m; return m; } } catch { /* следующий путь */ }
+    }
+    return null;
+}
+
+/** Открыть чат карточки или группы средствами таверны — та же последовательность, что у стоковой главной. */
+async function openDirect(o, file) {
+    const c = ctx();
+    const busyMsg = 'таверна занята (идёт ответ или сохранение) — попробуй ещё раз';
+    if (o.group) {
+        const g = groupOf(o.group);
+        if (!g) throw new Error('этой группы в таверне уже нет');
+        if (file && !(g.chats || []).map(String).includes(file)) throw new Error('такого чата у группы уже нет');
+        if (String(c.groupId ?? '') !== String(g.id)) {
+            const api = await groupsApi();
+            if (typeof api?.openGroupById !== 'function') throw new Error('в таверне нет openGroupById');
+            await api.openGroupById(g.id);
+            if (String(ctx().groupId ?? '') !== String(g.id)) throw new Error(busyMsg);
+        }
+        const now = ctx();
+        if (file && now.getCurrentChatId?.() !== file) {
+            if (typeof now.openGroupChat !== 'function') throw new Error('в таверне нет openGroupChat');
+            await now.openGroupChat(g.id, file);
+        }
+        return;
+    }
+    const idx = (c.characters || []).findIndex(x => x?.avatar === o.avatar);
+    if (idx < 0) throw new Error('этой карточки в таверне уже нет');
+    // из группы — тоже выбрать заново: номер последнего говорившего может совпасть с нужным
+    if (c.groupId || String(c.characterId) !== String(idx)) await c.selectCharacterById(idx);
+    const now = ctx();
+    if (now.groupId || String(now.characterId) !== String(idx)) throw new Error(busyMsg);
+    if (!file || now.getCurrentChatId?.() === file) return;
+    if (typeof now.openCharacterChat !== 'function') throw new Error('в таверне нет openCharacterChat');
+    await now.openCharacterChat(file);
+}
+
+/** Открыть чат из шторки: если он есть среди недавних — стоковой кнопкой (как всё в Фойе), иначе напрямую. */
+async function openFromSheet(o, file) {
+    const key = file ? chatKey(o, file) : '';
+    if (card.busy) return;
+    const it = key ? byKey(key) : null;
+    if (it?.el) { closeSheet(); openChat(it); return; }
+    card.busy = key || ownerKey(o);
+    cardRepaint();
+    try {
+        await openDirect(o, file);
+        card.busy = '';
+        closeSheet();
+    } catch (e) {
+        card.busy = '';
+        console.warn('[Фойе] открыть чат', e);
+        try { window.toastr?.warning(esc(String(e?.message || e)), 'Фойе'); } catch { /* */ }
+        cardRepaint();
+    }
 }
 
 // ───────────── действия ─────────────
@@ -861,6 +1133,36 @@ function onSheetClick(e) {
         case 'ev': evSheet(b.getAttribute('data-uid')); break;
         case 'played': b.disabled = true; markPlayed(b.getAttribute('data-uid'), b.getAttribute('data-v') === '1'); break;
         case 'chrono-all': fullSheet(); break;
+        case 'card': if (it) cardSheet(it.group ? { group: it.group } : { avatar: it.avatar }); break;
+        case 'card-open': openFromSheet(card.owner, b.getAttribute('data-file')); break;
+        case 'card-last': openFromSheet(card.owner, ''); break;
+        case 'card-pin': {
+            const av = card.owner?.avatar;
+            if (!av) break;
+            if (!s.pins || typeof s.pins !== 'object') s.pins = {};
+            if (s.pins[av]) delete s.pins[av]; else s.pins[av] = Date.now();
+            save(); cardRepaint(); renderSoon();
+            break;
+        }
+        case 'arch-chat': {
+            const k = b.getAttribute('data-k');
+            if (!k) break;
+            setArch('chats', k, !chatArch(k));
+            if (ui.sheet?.kind === 'card') cardRepaint(); else if (ui.sheet?.kind === 'archive') archSheet(); else closeSheet();
+            renderSoon();
+            break;
+        }
+        case 'arch-card': {
+            const k = b.getAttribute('data-o') || (card.owner ? ownerKey(card.owner) : '');
+            if (!k) break;
+            setArch('cards', k, !arch().cards[k]);
+            if (ui.sheet?.kind === 'card') cardRepaint(); else if (ui.sheet?.kind === 'archive') archSheet();
+            renderSoon();
+            break;
+        }
+        case 'archive': archSheet(); break;
+        case 'arch-open-card': { const k = b.getAttribute('data-o') || ''; cardSheet(k.startsWith('g:') ? { group: k.slice(2) } : { avatar: k.replace(/^c:/, '') }, 'archive'); break; }
+        case 'arch-open-chat': { const o = parseKey(b.getAttribute('data-k')); card.owner = o.group ? { group: o.group } : { avatar: o.avatar }; openFromSheet(card.owner, o.file); break; }
     }
 }
 
@@ -883,12 +1185,9 @@ function onClick(e) {
         case 'temp': mountedPanel?.querySelector('.openTemporaryChat')?.click(); break;
         case 'stock-settings': mountedPanel?.querySelector('.recentChatsSettings')?.click(); break;
         case 'all-chars': document.getElementById('rightNavDrawerIcon')?.click(); break;
-        case 'char': {
-            const i = b.getAttribute('data-i');
-            b.classList.add('fy-busy');
-            Promise.resolve(ctx().selectCharacterById(Number(i))).catch(err => { console.warn('[Фойе] персонаж', err); b.classList.remove('fy-busy'); });
-            break;
-        }
+        case 'archive': archSheet(); break;
+        case 'life-win': try { globalThis.LifeWin?.open?.(b.getAttribute('data-v')); } catch (err) { console.warn('[Фойе] окно Life', err); } break;
+        case 'char': cardSheet({ avatar: b.getAttribute('data-av') }); break;   // тап по персонажу — все его чаты; «Продолжить последний» — первой кнопкой
     }
 }
 
@@ -896,7 +1195,7 @@ function onInput(e) {
     if (!e.target.matches?.('[data-fy-q]')) return;
     ui.q = e.target.value || '';
     const list = document.querySelector('#fy-root .fy-list');
-    if (list) { const big = new Set(heroItems().map(it => it.key)); list.innerHTML = listHtml(items.filter(it => !big.has(it.key))); }
+    if (list) { const big = new Set(heroItems().map(it => it.key)); list.innerHTML = listHtml(live.filter(it => !big.has(it.key))); }
     const h = document.querySelector('#fy-root .fy-sec h3');
     if (h) h.textContent = ui.q ? 'Найдено' : 'Недавние';
 }
@@ -986,5 +1285,7 @@ jQuery(() => {
     // часы в шапке главной
     setInterval(() => { if (document.body.classList.contains('fy-on') && !ui.sheet) { const s = document.querySelector('#fy-root .fy-head small'); if (s) s.textContent = todayLine(); } }, 30000);
     globalThis.Foyer = { version: VERSION, snap: takeSnap, render: renderSoon };
+    // Life поднимается своим чередом: его окна появятся на главной, как только он скажет, что они есть
+    { let n = 0; const iv = setInterval(() => { if (lifeWins().length) { clearInterval(iv); if (!document.querySelector('#fy-root .fy-wins')) renderSoon(); } else if (++n > 20) clearInterval(iv); }, 1500); }
     console.log(`[Фойе] ${VERSION}`);
 });
